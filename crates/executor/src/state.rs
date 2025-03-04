@@ -6,6 +6,7 @@ use std::{
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::memory_map::MemoryMap;
 use crate::{events::MemoryRecord, syscalls::SyscallCode, ExecutorMode};
 
 /// Holds data describing the current state of a program's execution.
@@ -20,7 +21,7 @@ pub struct ExecutionState {
 
     /// The memory which instructions operate over. Values contain the memory value and last shard
     /// + timestamp that each memory address was accessed.
-    pub memory: HashMap<u32, MemoryRecord>,
+    pub memory: MemoryMap<MemoryRecord>,
 
     /// The global clock keeps track of how many instructions have been executed through all shards.
     pub global_clk: u64,
@@ -63,7 +64,7 @@ impl ExecutionState {
             current_shard: 1,
             clk: 0,
             pc: pc_start,
-            memory: HashMap::new(),
+            memory: MemoryMap::with_capacity(200_000),
             uninitialized_memory: HashMap::new(),
             input_stream: Vec::new(),
             input_stream_ptr: 0,

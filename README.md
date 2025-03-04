@@ -34,7 +34,9 @@ cd benchmark
 cargo run —-release 
 ```
 
-Note that performance varies based on the hardware being utilized. Submissions will be judged using a m7i.8xlarge instance on AWS. 
+Start by exploring the `crates/executor` crate to understand its current implementation and identify performance bottlenecks. Focus on improving the existing implementation while ensuring that any modifications are benchmarked for performance improvements and correctness.
+
+Note that performance varies based on the hardware being utilized. Submissions will be judged using a m7i.8xlarge instance on AWS. With the existing implementation, the average MHz is around 9.35.
 
 ## Leaderboard
 

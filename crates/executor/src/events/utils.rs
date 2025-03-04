@@ -25,8 +25,7 @@ pub struct LookupId {
 
 /// Creates a new ALU lookup id with ``LookupId``
 #[must_use]
-pub fn create_alu_lookup_id() -> LookupId {
-    let mut rng = thread_rng();
+pub fn create_alu_lookup_id(rng: &mut impl Rng) -> LookupId {
     LookupId {
         a: rng.gen(),
         b: rng.gen(),

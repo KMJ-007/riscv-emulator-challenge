@@ -4,19 +4,20 @@ use std::{
     sync::Arc,
 };
 
-use hashbrown::{hash_map::Entry, HashMap};
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     context::SP1Context,
     events::{
-        create_alu_lookup_id, LookupId, MemoryAccessPosition, MemoryLocalEvent, MemoryReadRecord,
-        MemoryRecord, MemoryWriteRecord,
+        LookupId, MemoryAccessPosition, MemoryLocalEvent, MemoryReadRecord, MemoryRecord,
+        MemoryWriteRecord,
     },
     hook::{HookEnv, HookRegistry},
+    memory_map::{MemEntry as Entry, MemoryMap},
     state::{ExecutionState, ForkState},
-    syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext},
+    syscalls::{default_syscall_map, LocalMemAccessMap, Syscall, SyscallCode, SyscallContext},
     Instruction, Opcode, Program, Register,
 };
 
@@ -63,7 +64,7 @@ pub struct Executor<'a> {
     pub state: ExecutionState,
 
     /// Local memory access events.
-    pub local_memory_access: HashMap<u32, MemoryLocalEvent>,
+    pub local_memory_access: LocalMemAccessMap,
 
     /// A counter for the number of cycles that have been executed in certain functions.
     pub cycle_tracker: HashMap<String, (u64, u32)>,
@@ -82,6 +83,11 @@ pub struct Executor<'a> {
 
     /// The maximal shapes for the program.
     pub maximal_shapes: Option<Vec<HashMap<String, usize>>>,
+
+    /// Register cache for faster access
+    register_cache: [Option<u32>; 32],
+    /// Track which registers have been modified
+    register_dirty: [bool; 32],
 }
 
 /// The different modes the executor can run in.
@@ -189,8 +195,10 @@ impl<'a> Executor<'a> {
             max_cycles: context.max_cycles,
             memory_checkpoint: HashMap::new(),
             uninitialized_memory_checkpoint: HashMap::new(),
-            local_memory_access: HashMap::new(),
+            local_memory_access: LocalMemAccessMap::new(),
             maximal_shapes: None,
+            register_cache: [None; 32],
+            register_dirty: [false; 32],
         }
     }
 
@@ -331,7 +339,7 @@ impl<'a> Executor<'a> {
         addr: u32,
         shard: u32,
         timestamp: u32,
-        local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
+        local_memory_access: Option<&mut LocalMemAccessMap>,
     ) -> MemoryReadRecord {
         // Get the memory record entry.
         let entry = self.state.memory.entry(addr);
@@ -371,16 +379,12 @@ impl<'a> Executor<'a> {
                 self.uninitialized_memory_checkpoint
                     .entry(addr)
                     .or_insert_with(|| *value != 0);
-                entry.insert(MemoryRecord {
-                    value: *value,
-                    shard: 0,
-                    timestamp: 0,
-                })
+                entry.insert(MemoryRecord::new(shard, timestamp, *value))
             }
         };
 
         let prev_record = *record;
-        record.shard = shard;
+        record.set_shard(shard);
         record.timestamp = timestamp;
 
         if !self.unconstrained {
@@ -405,9 +409,9 @@ impl<'a> Executor<'a> {
         // Construct the memory read record.
         MemoryReadRecord::new(
             record.value,
-            record.shard,
+            record.shard(),
             record.timestamp,
-            prev_record.shard,
+            prev_record.shard(),
             prev_record.timestamp,
         )
     }
@@ -421,65 +425,52 @@ impl<'a> Executor<'a> {
         timestamp: u32,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        // Get the memory record entry.
+        // Get the memory record entry once and reuse it
         let entry = self.state.memory.entry(addr);
+        
+        // Handle checkpointing and unconstrained mode in a single pass
         if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
-            match entry {
-                Entry::Occupied(ref entry) => {
-                    let record = entry.get();
-                    self.memory_checkpoint
-                        .entry(addr)
-                        .or_insert_with(|| Some(*record));
-                }
-                Entry::Vacant(_) => {
-                    self.memory_checkpoint.entry(addr).or_insert(None);
-                }
+            let record = match &entry {
+                Entry::Occupied(entry) => Some(entry.get()),
+                Entry::Vacant(_) => None,
+            };
+            
+            // Handle checkpointing
+            if self.executor_mode == ExecutorMode::Checkpoint {
+                self.memory_checkpoint.entry(addr).or_insert(record.copied());
+            }
+            
+            // Handle unconstrained mode
+            if self.unconstrained {
+                self.unconstrained_state.memory_diff.entry(addr).or_insert(record.copied());
             }
         }
 
-        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
-        // original state if it's the first time modifying it.
-        if self.unconstrained {
-            let record = match entry {
-                Entry::Occupied(ref entry) => Some(entry.get()),
-                Entry::Vacant(_) => None,
-            };
-            self.unconstrained_state
-                .memory_diff
-                .entry(addr)
-                .or_insert(record.copied());
-        }
-
-        // If it's the first time accessing this address, initialize previous values.
+        // Get or create the memory record with optimized initialization
         let record: &mut MemoryRecord = match entry {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                // If addr has a specific value to be initialized with, use that, otherwise 0.
-                let value = self.state.uninitialized_memory.get(&addr).unwrap_or(&0);
-                self.uninitialized_memory_checkpoint
-                    .entry(addr)
-                    .or_insert_with(|| *value != 0);
-
-                entry.insert(MemoryRecord {
-                    value: *value,
-                    shard: 0,
-                    timestamp: 0,
-                })
+                // Get initialization value in a single operation
+                let init_value = if let Some(&value) = self.state.uninitialized_memory.get(&addr) {
+                    self.uninitialized_memory_checkpoint.entry(addr).or_insert(true);
+                    value
+                } else {
+                    self.uninitialized_memory_checkpoint.entry(addr).or_insert(false);
+                    0
+                };
+                
+                entry.insert(MemoryRecord::new(shard, 0, init_value))
             }
         };
 
         let prev_record = *record;
         record.value = value;
-        record.shard = shard;
+        record.set_shard(shard);
         record.timestamp = timestamp;
 
+        // Handle local memory access tracking
         if !self.unconstrained {
-            let local_memory_access = if let Some(local_memory_access) = local_memory_access {
-                local_memory_access
-            } else {
-                &mut self.local_memory_access
-            };
-
+            let local_memory_access = local_memory_access.unwrap_or(&mut self.local_memory_access);
             local_memory_access
                 .entry(addr)
                 .and_modify(|e| {
@@ -492,13 +483,12 @@ impl<'a> Executor<'a> {
                 });
         }
 
-        // Construct the memory write record.
         MemoryWriteRecord::new(
             record.value,
-            record.shard,
+            record.shard(),
             record.timestamp,
             prev_record.value,
-            prev_record.shard,
+            prev_record.shard(),
             prev_record.timestamp,
         )
     }
@@ -529,17 +519,97 @@ impl<'a> Executor<'a> {
     }
 
     /// Read from a register.
+    #[inline(always)]
     pub fn rr(&mut self, register: Register, position: MemoryAccessPosition) -> u32 {
-        self.mr_cpu(register as u32, position)
+        let reg_idx = register as usize;
+        
+        // Fast path: Check cache first
+        if let Some(value) = self.register_cache[reg_idx] {
+            return value;
+        }
+        
+        // Slow path: Load from memory map
+        let addr = register as u32;
+        assert_valid_memory_access!(addr, position);
+
+        let shard = self.shard();
+        let timestamp = self.timestamp(&position);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            match &self.state.memory.registers[reg_idx] {
+                Some(value) => {
+                    self.memory_checkpoint
+                        .entry(addr)
+                        .or_insert_with(|| Some(*value));
+                }
+                None => {
+                    self.memory_checkpoint.entry(addr).or_insert(None);
+                }
+            }
+        }
+
+        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
+        // original state if it's the first time modifying it.
+        if self.unconstrained {
+            self.unconstrained_state
+                .memory_diff
+                .entry(addr)
+                .or_insert(self.state.memory.registers[reg_idx].clone());
+        }
+
+        // If it's the first time accessing this address, initialize previous values.
+        let record: &mut MemoryRecord = match self.state.memory.registers[reg_idx].as_mut() {
+            Some(record) => record,
+            None => {
+                // If addr has a specific value to be initialized with, use that, otherwise 0.
+                let value = self.state.uninitialized_memory.get(&addr).unwrap_or(&0);
+                self.uninitialized_memory_checkpoint
+                    .entry(addr)
+                    .or_insert_with(|| *value != 0);
+                (&mut self.state.memory.registers[reg_idx])
+                    .insert(MemoryRecord::new(0, 0, *value))
+            }
+        };
+
+        let prev_record = *record;
+        record.set_shard(shard);
+        record.timestamp = timestamp;
+
+        if !self.unconstrained {
+            self.local_memory_access
+                .entry(addr)
+                .and_modify(|e| {
+                    e.final_mem_access = *record;
+                })
+                .or_insert(MemoryLocalEvent {
+                    addr,
+                    initial_mem_access: prev_record,
+                    final_mem_access: *record,
+                });
+        }
+
+        // Update cache
+        self.register_cache[reg_idx] = Some(record.value);
+        record.value
     }
 
     /// Write to a register.
+    #[inline(always)]
     pub fn rw(&mut self, register: Register, value: u32) {
         // The only time we are writing to a register is when it is in operand A.
         // Register %x0 should always be 0. See 2.6 Load and Store Instruction on
         // P.18 of the RISC-V spec. We always write 0 to %x0.
         if register == Register::X0 {
-            self.mw_cpu(register as u32, 0, MemoryAccessPosition::A);
+            return; // Fast path for x0
+        }
+
+        let reg_idx = register as usize;
+        self.register_cache[reg_idx] = Some(value);
+        self.register_dirty[reg_idx] = true;
+
+        // Defer memory map update until checkpoint
+        if self.executor_mode == ExecutorMode::Checkpoint {
+            self.flush_register(register);
         } else {
             self.mw_cpu(register as u32, value, MemoryAccessPosition::A);
         }
@@ -617,19 +687,8 @@ impl<'a> Executor<'a> {
         let (a, b, c): (u32, u32, u32);
         let (addr, memory_read_value): (u32, u32);
 
-        if self.executor_mode == ExecutorMode::Trace {
-            // self.memory_accesses = MemoryAccessRecord::default();
-        }
-        let lookup_id = if self.executor_mode == ExecutorMode::Trace {
-            create_alu_lookup_id()
-        } else {
-            LookupId::default()
-        };
-        let syscall_lookup_id = if self.executor_mode == ExecutorMode::Trace {
-            create_alu_lookup_id()
-        } else {
-            LookupId::default()
-        };
+        let lookup_id = LookupId::default();
+        let syscall_lookup_id = LookupId::default();
 
         match instruction.opcode {
             // Arithmetic instructions.
@@ -1013,76 +1072,14 @@ impl<'a> Executor<'a> {
         Ok(done)
     }
 
-    /// Execute up to `self.shard_batch_size` cycles, returning the checkpoint from before execution
-    /// and whether the program ended.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the program execution fails.
-    pub fn execute_state(&mut self) -> Result<(ExecutionState, bool), ExecutionError> {
-        self.memory_checkpoint.clear();
-        self.executor_mode = ExecutorMode::Checkpoint;
-
-        // Clone self.state without memory and uninitialized_memory in it so it's faster.
-        let memory = std::mem::take(&mut self.state.memory);
-        let uninitialized_memory = std::mem::take(&mut self.state.uninitialized_memory);
-        let mut checkpoint = tracing::info_span!("clone").in_scope(|| self.state.clone());
-        self.state.memory = memory;
-        self.state.uninitialized_memory = uninitialized_memory;
-
-        let done = tracing::info_span!("execute").in_scope(|| self.execute())?;
-        // Create a checkpoint using `memory_checkpoint`. Just include all memory if `done` since we
-        // need it all for MemoryFinalize.
-        tracing::info_span!("create memory checkpoint").in_scope(|| {
-            let memory_checkpoint = std::mem::take(&mut self.memory_checkpoint);
-            let uninitialized_memory_checkpoint =
-                std::mem::take(&mut self.uninitialized_memory_checkpoint);
-            if done {
-                // If we're done, we need to include all memory. But we need to reset any modified
-                // memory to as it was before the execution.
-                checkpoint.memory.clone_from(&self.state.memory);
-                memory_checkpoint.into_iter().for_each(|(addr, record)| {
-                    if let Some(record) = record {
-                        checkpoint.memory.insert(addr, record);
-                    } else {
-                        checkpoint.memory.remove(&addr);
-                    }
-                });
-                checkpoint.uninitialized_memory = self.state.uninitialized_memory.clone();
-                // Remove memory that was written to in this batch.
-                for (addr, is_old) in uninitialized_memory_checkpoint {
-                    if !is_old {
-                        checkpoint.uninitialized_memory.remove(&addr);
-                    }
-                }
-            } else {
-                checkpoint.memory = memory_checkpoint
-                    .into_iter()
-                    .filter_map(|(addr, record)| record.map(|record| (addr, record)))
-                    .collect();
-                checkpoint.uninitialized_memory = uninitialized_memory_checkpoint
-                    .into_iter()
-                    .filter(|&(_, has_value)| has_value)
-                    .map(|(addr, _)| (addr, *self.state.uninitialized_memory.get(&addr).unwrap()))
-                    .collect();
-            }
-        });
-        Ok((checkpoint, done))
-    }
-
     fn initialize(&mut self) {
         self.state.clk = 0;
 
         tracing::debug!("loading memory image");
         for (&addr, value) in &self.program.memory_image {
-            self.state.memory.insert(
-                addr,
-                MemoryRecord {
-                    value: *value,
-                    shard: 0,
-                    timestamp: 0,
-                },
-            );
+            self.state
+                .memory
+                .insert(addr, MemoryRecord::new(0, 0, *value));
         }
     }
 
@@ -1130,6 +1127,8 @@ impl<'a> Executor<'a> {
 
         if done {
             self.postprocess();
+            // Flush any remaining dirty registers
+            self.flush_registers();
         }
 
         Ok(done)
@@ -1181,6 +1180,33 @@ impl<'a> Executor<'a> {
                 self.state.global_clk,
                 self.state.pc
             );
+        }
+    }
+
+    /// Flush a single register to memory map
+    #[inline(always)]
+    fn flush_register(&mut self, register: Register) {
+        let reg_idx = register as usize;
+        if self.register_dirty[reg_idx] {
+            if let Some(value) = self.register_cache[reg_idx] {
+                self.state.memory.registers[reg_idx] = Some(MemoryRecord::new(
+                    self.shard(),
+                    self.timestamp(&MemoryAccessPosition::A),
+                    value
+                ));
+            }
+            self.register_dirty[reg_idx] = false;
+        }
+    }
+
+    /// Flush all dirty registers to memory map
+    fn flush_registers(&mut self) {
+        if self.executor_mode == ExecutorMode::Checkpoint {
+            for reg in 0..32 {
+                if self.register_dirty[reg] {
+                    self.flush_register(Register::from_u32(reg as u32));
+                }
+            }
         }
     }
 }

@@ -2,8 +2,11 @@ use hashbrown::HashMap;
 
 use crate::{
     events::{LookupId, MemoryLocalEvent, MemoryReadRecord, MemoryWriteRecord},
+    memory_map::MemoryMap,
     Executor, Register,
 };
+
+pub type LocalMemAccessMap = HashMap<u32, MemoryLocalEvent>;
 
 /// A runtime for syscalls that is protected so that developers cannot arbitrarily modify the
 /// runtime.
@@ -37,7 +40,7 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
             exit_code: 0,
             rt: runtime,
             syscall_lookup_id: LookupId::default(),
-            local_memory_access: HashMap::new(),
+            local_memory_access: LocalMemAccessMap::new(),
         }
     }
 

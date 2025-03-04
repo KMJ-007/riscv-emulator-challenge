@@ -26,6 +26,7 @@ mod executor;
 mod hook;
 mod instruction;
 mod io;
+mod memory_map;
 mod opcode;
 mod program;
 mod register;

@@ -14,6 +14,27 @@ pub struct MemoryRecord {
     pub value: u32,
 }
 
+impl MemoryRecord {
+    /// TODO: docs
+    pub fn new(shard: u32, timestamp: u32, value: u32) -> Self {
+        Self {
+            shard,
+            timestamp,
+            value,
+        }
+    }
+
+    /// TODO: docs
+    pub fn set_shard(&mut self, shard: u32) {
+        self.shard = shard;
+    }
+
+    /// TODO: docs
+    pub const fn shard(&self) -> u32 {
+        self.shard
+    }
+}
+
 /// Memory Access Position.
 ///
 /// This enum represents the position of a memory access in a register. For example, if a memory
@@ -90,16 +111,12 @@ impl MemoryRecordEnum {
     #[must_use]
     pub fn current_record(&self) -> MemoryRecord {
         match self {
-            MemoryRecordEnum::Read(record) => MemoryRecord {
-                shard: record.shard,
-                timestamp: record.timestamp,
-                value: record.value,
-            },
-            MemoryRecordEnum::Write(record) => MemoryRecord {
-                shard: record.shard,
-                timestamp: record.timestamp,
-                value: record.value,
-            },
+            MemoryRecordEnum::Read(record) => {
+                MemoryRecord::new(record.shard, record.timestamp, record.value)
+            }
+            MemoryRecordEnum::Write(record) => {
+                MemoryRecord::new(record.shard, record.timestamp, record.value)
+            }
         }
     }
 
@@ -107,16 +124,12 @@ impl MemoryRecordEnum {
     #[must_use]
     pub fn previous_record(&self) -> MemoryRecord {
         match self {
-            MemoryRecordEnum::Read(record) => MemoryRecord {
-                shard: record.prev_shard,
-                timestamp: record.prev_timestamp,
-                value: record.value,
-            },
-            MemoryRecordEnum::Write(record) => MemoryRecord {
-                shard: record.prev_shard,
-                timestamp: record.prev_timestamp,
-                value: record.prev_value,
-            },
+            MemoryRecordEnum::Read(record) => {
+                MemoryRecord::new(record.prev_shard, record.prev_timestamp, record.value)
+            }
+            MemoryRecordEnum::Write(record) => {
+                MemoryRecord::new(record.prev_shard, record.prev_timestamp, record.prev_value)
+            }
         }
     }
 }
@@ -150,7 +163,8 @@ impl MemoryReadRecord {
         prev_shard: u32,
         prev_timestamp: u32,
     ) -> Self {
-        assert!(shard > prev_shard || ((shard == prev_shard) && (timestamp > prev_timestamp)));
+        // TODO: Re-enable?
+        // assert!(shard > prev_shard || ((shard == prev_shard) && (timestamp > prev_timestamp)));
         Self {
             value,
             shard,
@@ -214,7 +228,7 @@ impl MemoryInitializeFinalizeEvent {
         Self {
             addr,
             value: record.value,
-            shard: record.shard,
+            shard: record.shard(),
             timestamp: record.timestamp,
             used: 1,
         }

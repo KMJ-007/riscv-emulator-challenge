@@ -1795,6 +1795,7 @@ dependencies = [
 name = "sp1-curves"
 version = "3.0.0"
 dependencies = [
+ "alloy-primitives",
  "cfg-if",
  "curve25519-dalek",
  "dashu",

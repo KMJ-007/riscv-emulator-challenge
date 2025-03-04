@@ -21,6 +21,7 @@ amcl = { package = "snowbridge-amcl", version = "1.0.2", default-features = fals
 ] }
 elliptic-curve = "0.13.8"
 dashu = "0.4.2"
+alloy-primitives = "0.8.22"
 
 
 sp1-primitives = { workspace = true }
