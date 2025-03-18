@@ -32,14 +32,20 @@ They've provided a benchmark program that:
 
 All the zero-knowledge and SP1 stuff? That's their bigger project. For this challenge, we just need to focus on making the RISC-V emulator run faster while still producing the correct results.
 
-for context on my Macbook Air M1 8gb ram:
+for context on my home pc:
 ```bash
 ===== BENCHMARK RESULTS =====
 Runs: 5
-Average elapsed: 7.9018 seconds
-Average MHz: 7.09
+Average elapsed: 25.2662 seconds
+Average MHz: 2.22
 ```
 
+have following spac:
+- **Operating System:** Pop!_OS 22.04 LTS
+- **Host:** Inspiron 3520
+- **Kernel:** 6.8.0-76060800
+- **CPU:** Intel i5-3210M (4 cores)
+- **Memory:** ~5.8 GB RAM
 
 for comparision a m7i.8xlarge instance on AWS gives average MHZ of 9.35 which they mentioned in their challange, and they will be testing on that machine.
 
@@ -50,8 +56,8 @@ so i used [cargo instrument](https://github.com/cmyr/cargo-instruments) for gene
 
 ![image](https://gist.github.com/user-attachments/assets/78ea36eb-5fb8-4337-b032-5e1d182c8931)
 
-
-from the first profiline found out that executor program which is heart has following things:
+(i run the profiler on my work pc to get more detailed results, my current pc sucks in this specific thing)
+from the first profiler found out that executor program which is heart has following things:
 
 ```bash
 Time    % of Total   Self Time   Function Name
