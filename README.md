@@ -1,3 +1,22 @@
+
+# My Implementation:
+
+| Metric             | Base Implementation | My Implementation |
+| ------------------ | ------------------- | ----------------- |
+| Runs               | 5                   | 5                 |
+| Average Elapsed Time | 25.2662 seconds     | 6.2677 seconds    |
+| Average MHz        | 2.22                | 8.95              |
+
+This represents a significant improvement, with the average MHz increasing by approximately 4x compared to the base implementation.
+
+### Environment Specifications
+- **Operating System:** Pop!_OS 22.04 LTS
+- **Host:** Inspiron 3520
+- **Kernel:** 6.8.0-76060800
+- **CPU:** Intel i5-3210M (4 cores)
+- **Memory:** ~5.8 GB RAM
+
+
 # Succinct RISC-V Emulator Challenge
 
 Succinct is building a SP1, a zero-knowledge virtual machine that can prove the execution of RISC-V bytecode.
