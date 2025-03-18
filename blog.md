@@ -386,3 +386,32 @@ The result is a significant reduction in the time spent on register operations, 
 - The original implementation was doing unnecessary work for every access
 - The new implementation maintains correctness while dramatically reducing overhead
 - The optimizations align well with modern CPU architecture (cache-friendly, branch-predictor friendly)
+
+
+### P.S.: Thinking About Inter-Shard or Global Caching
+
+My optimizations (register cache, Vec-based memory) boost single-execution speed for programs like `rsp`. But what about caching across shards or program runs? Here's how Succinct (or I) could extend the emulator:
+
+#### Inter-Shard Caching
+
+Each shard is 2M cycles; `rsp` might use 50 shards (100M cycles). We could cache hot instruction metadata or precomputed ALU results *within* an execution.
+
+Imagine a `HashMap<InstructionIdx, ALUResult>` in `Executor`, where `InstructionIdx` is the program counter offset. If shard 1 processes a loop (`add x31, x30, x29`), shard 2 could skip decoding/computation if `x30`/`x29` haven't changed.
+
+This requires tracking register dependencies (e.g., via `register_dirty`) and cache invalidation. Shard boundaries might split loops, but it could save cycles for tight intra-shard loops.
+
+*Downside:* Extra memory/complexity, maybe 5-10% speedup if loops dominate.
+
+#### Global Cache Across Runs
+
+If the same program (e.g., `rsp`) runs multiple times with different inputs (like the benchmark's 5 runs), a global cache could store compiled instruction blocks or common ALU results.
+
+Picture a `static lazy_static! { static ref GLOBAL_CACHE: Mutex<HashMap<ProgramHash, Vec<CompiledBlock>>> = ...; }`, where `ProgramHash` is a hash of the instruction bytes. The first run JIT-compiles hot paths and caches them. Later runs grab these blocks, skipping decode/execute.
+
+This helps if Succinct reuses programs, but it's useless for unique programs. It could boost MHz across the benchmark's 5 runs (maybe 20-30%), but needs persistent storage (file-based) and careful invalidation.
+
+#### Why It's Not In Yet
+
+The challenge prioritizes single-execution speed (MHz per run). My current optimizations hit intra-shard bottlenecks (memory, ALU, etc.). Inter-shard caching adds overhead that might not pay off unless loops predictably span shards. Global caching only works if the same program runs repeatedly, which isn't guaranteed outside the benchmark.
+
+Still, if Succinct's SP1 system reuses programs or shards overlap, these could be killer additions. Worth profiling `rsp` to see!
