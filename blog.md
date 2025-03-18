@@ -155,37 +155,11 @@ pub fn entry(&mut self, addr: u32) -> MemEntry<'_, V> {
 
 ### 3. Attempted Hash Map Optimization
 
-We tried to optimize the memory map's hashing strategy by replacing the default hasher with `BuildNoHashHasher`:
+After tweaking the address translation and register stuff, I started eyeballing that `HashMap` in `MemoryMap`. The profiler showed memory writes (`mw`) eating 21.2% of the time, and I figured the default SipHash in `DefaultHashBuilder` might be slowing things down—it’s hefty, like 50-100 cycles per key. So, I thought, “What if I make my own hasher? Something fast but still smart enough to avoid collisions?”
+
+Here’s what I whipped up:
 
 ```rust
-// Original
-type MemoryHasher = DefaultHashBuilder;
-
-// Attempted change
-type MemoryHasher = BuildNoHashHasher<u32>;
-```
-
-The idea was that since memory addresses are sequential and well-distributed, we could use a faster hashing strategy. However, this change actually made performance significantly worse:
-
-```bash
-Before:
-297.00 ms  2.6%  sp1_core_executor::executor::Executor::mw::h535b9a038b527ce9
-
-After:
-4.41 s  26.3%  sp1_core_executor::executor::Executor::mw::h535b9a038b527ce9
-```
-
-The performance regression (about 13x slower) occurred because:
-1. The memory addresses, while sequential, have a specific pattern that the default hasher handles well
-2. The `BuildNoHashHasher` caused more collisions than expected
-3. The memory layout with the default hasher was actually more cache-friendly
-
-### 3.5. Custom Hash Function Experiment
-Okay, so BuildNoHashHasher was a bust—made things way slower because of all those collisions. I was like, "Fine, let’s try something in between: fast like BuildNoHashHasher but smarter like the default SipHash." Enter the custom hash function idea! I figured I could roll my own hasher to mix up those sequential memory addresses (0, 1, 2, ...) from translate_addr without the heavy lifting of SipHash.
-
-Here’s what I cooked up:
-```rust
-
 struct MemoryHasher { state: u64 }
 
 impl std::hash::Hasher for MemoryHasher {
@@ -194,7 +168,7 @@ impl std::hash::Hasher for MemoryHasher {
         let key = u32::from_ne_bytes(bytes.try_into().expect("u32 keys only"));
         let mut h = key as u64;
         h ^= h >> 33;
-        h *= 0xff51afd7ed558ccd; // Some magic numbers I borrowed from MurmurHash
+        h *= 0xff51afd7ed558ccd; // Magic numbers from MurmurHash
         h ^= h >> 33;
         h *= 0xc4ceb9fe1a85ec53;
         h ^= h >> 33;
@@ -209,7 +183,7 @@ impl std::hash::BuildHasher for BuildMemoryHasher {
     fn build_hasher(&self) -> Self::Hasher { MemoryHasher { state: 0 } }
 }
 
-// Then swap it in:
+// Swap it in:
 type MemoryHasher = BuildMemoryHasher;
 ```
 ### The Idea
@@ -235,6 +209,33 @@ I didn’t fully benchmark this one (went straight to `Vec` after), but I suspec
 ### Lesson
 
 Custom hashers are cool if you need `HashMap` and can’t avoid it, but they’re a compromise. For this challenge, where every cycle counts, I realized I might be barking up the wrong tree—why not ditch hashing entirely? That’s when I pivoted to the `Vec` idea, which ended up being the real winner.
+
+
+now i we are back to not trying lot of things our selves, We tried to optimize the memory map's hashing strategy by replacing the default hasher with `BuildNoHashHasher`:
+
+```rust
+// Original
+type MemoryHasher = DefaultHashBuilder;
+
+// Attempted change
+type MemoryHasher = BuildNoHashHasher<u32>;
+```
+
+The idea was that since memory addresses are sequential and well-distributed, we could use a faster hashing strategy. However, this change actually made performance significantly worse:
+
+```bash
+Before:
+297.00 ms  2.6%  sp1_core_executor::executor::Executor::mw::h535b9a038b527ce9
+
+After:
+4.41 s  26.3%  sp1_core_executor::executor::Executor::mw::h535b9a038b527ce9
+```
+
+The performance regression (about 13x slower) occurred because:
+1. The memory addresses, while sequential, have a specific pattern that the default hasher handles well
+2. The `BuildNoHashHasher` caused more collisions than expected
+3. The memory layout with the default hasher was actually more cache-friendly
+
 ### 4. Vec-Based Memory Optimization
 
 After analyzing the memory access patterns and performance bottlenecks, we implemented a significant change to the memory map structure:
