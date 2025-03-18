@@ -16,7 +16,7 @@ This represents a significant improvement, with the average MHz increasing by ap
 - **CPU:** Intel i5-3210M (4 cores)
 - **Memory:** ~5.8 GB RAM
 
-You can find my rough notes(AI generated/formated, too lazy to write) on the implementation here: https://github.com/KMJ-007/riscv-emulator-challenge/blob/main/blog.md , I plan to write a more detailed blog post on the weekend.
+You can find my rough notes on the implementation here: https://github.com/KMJ-007/riscv-emulator-challenge/blob/main/blog.md , I plan to write a more detailed blog post on the weekend.
 
 
 # Succinct RISC-V Emulator Challenge

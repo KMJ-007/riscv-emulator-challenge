@@ -1,6 +1,3 @@
-# NOTE:
->THESE ARE MY PERSONAL NOTES generated using LLM cause i am too lazy to write things, so if this looks AI generated than it is AI generated and formatted and in between i have also written some things and added screenshot where i thought this would help me in future when i am looking back
-
 
 # The Big Picture:
 - There's a company called Succinct, They're building something that needs to run RISC-V programs really fast, They've created this [challenge](https://github.com/succinctlabs/riscv-emulator-challenge) to make their RISC-V emulator faster, and i like challanges, so this is my attempt for doing this!
@@ -183,6 +180,61 @@ The performance regression (about 13x slower) occurred because:
 2. The `BuildNoHashHasher` caused more collisions than expected
 3. The memory layout with the default hasher was actually more cache-friendly
 
+### 3.5. Custom Hash Function Experiment
+Okay, so BuildNoHashHasher was a bust—made things way slower because of all those collisions. I was like, "Fine, let’s try something in between: fast like BuildNoHashHasher but smarter like the default SipHash." Enter the custom hash function idea! I figured I could roll my own hasher to mix up those sequential memory addresses (0, 1, 2, ...) from translate_addr without the heavy lifting of SipHash.
+
+Here’s what I cooked up:
+```rust
+
+struct MemoryHasher { state: u64 }
+
+impl std::hash::Hasher for MemoryHasher {
+    fn finish(&self) -> u64 { self.state }
+    fn write(&mut self, bytes: &[u8]) {
+        let key = u32::from_ne_bytes(bytes.try_into().expect("u32 keys only"));
+        let mut h = key as u64;
+        h ^= h >> 33;
+        h *= 0xff51afd7ed558ccd; // Some magic numbers I borrowed from MurmurHash
+        h ^= h >> 33;
+        h *= 0xc4ceb9fe1a85ec53;
+        h ^= h >> 33;
+        self.state = h;
+    }
+}
+
+struct BuildMemoryHasher;
+
+impl std::hash::BuildHasher for BuildMemoryHasher {
+    type Hasher = MemoryHasher;
+    fn build_hasher(&self) -> Self::Hasher { MemoryHasher { state: 0 } }
+}
+
+// Then swap it in:
+type MemoryHasher = BuildMemoryHasher;
+```
+### The Idea
+
+The idea? Take the `u32` address, scramble it with a few XORs and multiplies (way lighter than SipHash’s crypto-grade mixing), and use that as the hash. It’s still O(1), but it spreads keys better than `BuildNoHashHasher`’s "hash = key" approach. I got this mixing trick from MurmurHash—it’s fast and good enough for non-security stuff like this.
+
+### Why I Thought It’d Work
+
+- **Faster than SipHash**: Like 10-15 cycles vs. 50-100, so it’s not bogging down every memory op.
+- **Better Spread**: Sequential addresses (`0, 1, 2, ...`) get turned into pseudo-random numbers, so fewer collisions in the `HashMap`.
+- **Cache-Friendly**: It’s just ALU ops (no memory lookups), so it keeps the CPU happy.
+
+### The Catch
+
+- **Still Slower Than Nothing**: It’s not as quick as `BuildNoHashHasher`’s 1-cycle no-op. In a tight loop (2M cycles per shard), even 10 extra cycles per memory op adds up—could drop MHz by 5-10%.
+- **DIY Pain**: I had to write and debug it myself, which is a hassle compared to grabbing an off-the-shelf hasher.
+- **Pattern Risk**: If `rsp` has weird memory patterns (like sparse jumps), my magic numbers might not spread keys perfectly, and I’d get some collisions anyway.
+
+### Did It Work?
+
+I didn’t fully benchmark this one (went straight to `Vec` after), but I suspect it’d land somewhere between the default 9.35 MHz and the `BuildNoHashHasher` disaster. It’s a middle ground—faster than SipHash, slower than doing nothing, but safer than `BuildNoHashHasher`. Honestly, it felt like a lot of effort for a maybe 10-20% boost, and I was starting to think, “Why hash at all if I can just use a `Vec`?”
+
+### Lesson
+
+Custom hashers are cool if you need `HashMap` and can’t avoid it, but they’re a compromise. For this challenge, where every cycle counts, I realized I might be barking up the wrong tree—why not ditch hashing entirely? That’s when I pivoted to the `Vec` idea, which ended up being the real winner.
 ### 4. Vec-Based Memory Optimization
 
 After analyzing the memory access patterns and performance bottlenecks, we implemented a significant change to the memory map structure:
